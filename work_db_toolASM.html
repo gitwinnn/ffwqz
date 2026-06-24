@@ -1,0 +1,524 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>作業記録＋測定目録（SQLite / オフライン版）</title>
+
+<!-- ============================================================
+     SQLite エンジン (sql.js / asm.js版) の読み込み
+     ・このHTMLと同じフォルダにある sql-asm.js を直接読み込みます
+     ・インターネット接続は一切不要です（社内PC・file:// でも動作）
+     ・sql-asm.js を一緒に持ち運んでください（2ファイル1組）
+     ============================================================ -->
+<script src="sql-asm.js"></script>
+
+<style>
+  :root{
+    --bg:#f5f6f8; --panel:#ffffff; --line:#d4d8de; --line2:#e7eaee;
+    --ink:#1f2530; --sub:#5b6470; --accent:#2f6fdb; --accent2:#235bbd;
+    --okbg:#e7f6ec; --okink:#1d7a3d; --errbg:#fdecec; --errink:#b3261e;
+    --head:#eef2f8; --zebra:#fafbfc; --chip:#eef2f8; --edit:#fffdf3; --editfocus:#fff7d6;
+    --del:#b3261e;
+  }
+  *{box-sizing:border-box}
+  body{
+    margin:0; background:var(--bg); color:var(--ink);
+    font-family:"Segoe UI","Hiragino Kaku Gothic ProN","Yu Gothic UI",Meiryo,system-ui,sans-serif;
+    font-size:14px; line-height:1.6; padding:18px;
+  }
+  h1{font-size:18px; margin:0 0 4px}
+  .lead{color:var(--sub); margin:0 0 14px; font-size:13px}
+  .card{background:var(--panel); border:1px solid var(--line); border-radius:10px; padding:14px 16px; margin:0 0 14px}
+  .card h2{font-size:15px; margin:0 0 10px; display:flex; align-items:center; gap:8px}
+  .card h2 .tag{font-size:11px; color:var(--sub); background:var(--chip); border:1px solid var(--line2); border-radius:999px; padding:1px 9px; font-weight:600}
+  label{display:block; font-size:12px; color:var(--sub); margin:8px 0 3px}
+  input[type=text], textarea, select{
+    width:100%; padding:7px 9px; border:1px solid var(--line); border-radius:7px;
+    font-family:inherit; font-size:13px; background:#fff; color:var(--ink);
+  }
+  textarea{resize:vertical; min-height:54px}
+  .row{display:flex; gap:12px; flex-wrap:wrap}
+  .row > div{flex:1 1 180px; min-width:160px}
+  button{
+    font-family:inherit; font-size:13px; font-weight:600; cursor:pointer;
+    border:1px solid var(--accent2); background:var(--accent); color:#fff;
+    border-radius:7px; padding:8px 14px;
+  }
+  button:hover{background:var(--accent2)}
+  button.ghost{background:#fff; color:var(--accent2); border-color:var(--line)}
+  button.ghost:hover{background:var(--head)}
+  .btns{margin-top:12px; display:flex; gap:8px; flex-wrap:wrap; align-items:center}
+  .toolbar{display:flex; gap:8px; align-items:center; flex-wrap:wrap}
+  #status{font-size:12.5px; padding:8px 12px; border-radius:8px; background:#eef0f3; color:var(--sub); border:1px solid var(--line2)}
+  #status.ok{background:var(--okbg); color:var(--okink); border-color:#bfe4cc}
+  #status.err{background:var(--errbg); color:var(--errink); border-color:#f3c5c1}
+  .search-grid{display:flex; gap:12px; flex-wrap:wrap; align-items:flex-end}
+  .search-grid > div{flex:0 0 auto}
+  .search-grid .kw{flex:1 1 240px; min-width:200px}
+  .check{display:flex; align-items:center; gap:6px; font-size:13px; color:var(--ink); padding-bottom:7px}
+  .check input{width:auto}
+  .meta{font-size:12px; color:var(--sub); margin:10px 0 6px; display:flex; gap:12px; align-items:center}
+  .table-wrap{overflow:auto; border:1px solid var(--line); border-radius:8px; max-height:62vh}
+  table.grid{border-collapse:collapse; width:100%; font-size:12.5px}
+  table.grid th, table.grid td{
+    border:1px solid var(--line2); padding:6px 9px; text-align:left;
+    vertical-align:top; white-space:pre-wrap; word-break:break-word; max-width:420px;
+  }
+  table.grid th{background:var(--head); position:sticky; top:0; z-index:1; font-weight:700; white-space:nowrap}
+  table.grid td.num{font-variant-numeric:tabular-nums; white-space:nowrap}
+  table.grid td.path{font-family:ui-monospace,Consolas,Menlo,monospace; font-size:12px}
+  table.grid tr:nth-child(even) td{background:var(--zebra)}
+  table.grid td.edit{background:var(--edit); cursor:text}
+  table.grid tr:nth-child(even) td.edit{background:var(--edit)}
+  table.grid td.edit:focus{outline:2px solid var(--accent); outline-offset:-2px; background:var(--editfocus)}
+  table.grid td.op{white-space:nowrap; text-align:center}
+  table.grid td.wd{white-space:nowrap; text-align:center; color:var(--sub); font-size:12px}
+  button.del{background:#fff; color:var(--del); border:1px solid #f1c6c2; padding:3px 9px; font-size:12px; border-radius:6px}
+  button.del:hover{background:#fdecec}
+  .err{color:var(--errink)}
+  details{margin-top:6px; font-size:13px}
+  summary{cursor:pointer; color:var(--accent2); font-weight:600}
+  details .body{padding:8px 2px; color:var(--ink)}
+  code{background:#eef0f3; padding:1px 5px; border-radius:4px; font-family:ui-monospace,Consolas,monospace; font-size:12px}
+  pre{background:#0f1115; color:#e7eaee; padding:10px 12px; border-radius:8px; overflow:auto; font-size:12px}
+  .hint{font-size:12px; color:var(--sub)}
+</style>
+</head>
+<body>
+
+<h1>作業記録 ＋ 測定データ目録（オフライン版）</h1>
+<p class="lead">SQLite（sql.js）で動く、インターネット接続不要の1ファイルツール。<code>sql-asm.js</code> と同じフォルダに置いて使います。エクセル風の表示（行の高さ無制限）・<strong>表の上でそのまま編集／削除</strong>・普通検索／正規表現検索・DBの保存／読込ができます。</p>
+
+<div class="card">
+  <div class="toolbar">
+    <span id="status">起動中…</span>
+    <span style="flex:1"></span>
+    <button class="ghost" onclick="saveDb()">💾 DBをファイルに保存</button>
+    <label class="ghost" style="display:inline-block; padding:8px 14px; border:1px solid var(--line); border-radius:7px; color:var(--accent2); font-weight:600; cursor:pointer; margin:0;">
+      📂 DBを読込
+      <input type="file" accept=".sqlite,.db,.sqlite3" style="display:none" onchange="if(this.files[0]) loadDb(this.files[0])">
+    </label>
+  </div>
+  <p class="hint" style="margin:10px 0 0">※ データはこのページのメモリ上にあります。閉じる前に必ず「DBをファイルに保存」を押してください。次回は「DBを読込」で続きから使えます。</p>
+</div>
+
+<!-- 入力：作業記録 -->
+<div class="card">
+  <h2>📝 作業記録を入力 <span class="tag">work_log</span></h2>
+  <div class="row">
+    <div><label>日付</label><input type="text" id="w_date" placeholder="2025-06-21"></div>
+    <div style="flex:2 1 320px"><label>作業の見出し</label><input type="text" id="w_title" placeholder="ポンプP-12 定期点検"></div>
+  </div>
+  <label>内容（長文OK・改行できます）</label>
+  <textarea id="w_detail" placeholder="やったこと、状況、気づきなど"></textarea>
+  <label>得られた知識（長文OK）</label>
+  <textarea id="w_knowledge" placeholder="次に活かせる学び・ノウハウ"></textarea>
+  <div class="row">
+    <div><label>担当者・一緒に作業した人（カンマ区切り）</label><input type="text" id="w_people" placeholder="田中, 鈴木"></div>
+    <div><label>タグ（検索用・任意）</label><input type="text" id="w_tags" placeholder="点検, ポンプ"></div>
+  </div>
+  <div class="btns"><button onclick="addWorkLog()">＋ 登録する</button><span class="hint">登録後は下の表の上で直接書き換えられます。</span></div>
+</div>
+
+<!-- 入力：測定目録 -->
+<div class="card">
+  <h2>📊 測定データを目録に追加 <span class="tag">measurement</span></h2>
+  <p class="hint" style="margin:0 0 6px">巨大なCSV本体はファイルのまま保管し、ここには「場所（パス）」と代表値だけ記録します。</p>
+  <div class="row">
+    <div><label>測定日</label><input type="text" id="m_date" placeholder="2025-06-21"></div>
+    <div style="flex:2 1 280px"><label>測定名・対象</label><input type="text" id="m_name" placeholder="H100 ハウジング ハンマリング"></div>
+    <div><label>代表値（ピーク等・数値）</label><input type="text" id="m_peak" placeholder="12.3"></div>
+  </div>
+  <label>CSVファイルの場所（パス）</label>
+  <input type="text" id="m_path" placeholder="D:\data\2025-06-21_H100.csv">
+  <label>条件メモ</label>
+  <textarea id="m_conditions" placeholder="加振点、方向、サンプリング条件など"></textarea>
+  <label>備考</label>
+  <textarea id="m_note" placeholder="任意"></textarea>
+  <div class="btns"><button onclick="addMeasurement()">＋ 目録に追加</button></div>
+</div>
+
+<!-- 検索＆表示 -->
+<div class="card">
+  <h2>🔎 検索・表示・編集</h2>
+  <div class="search-grid">
+    <div>
+      <label>対象テーブル</label>
+      <select id="q_table" onchange="onTableChange()">
+        <option value="work_log">作業記録</option>
+        <option value="measurement">測定データ目録</option>
+      </select>
+    </div>
+    <div>
+      <label>対象の列</label>
+      <select id="q_col"></select>
+    </div>
+    <div class="kw">
+      <label>キーワード／正規表現</label>
+      <input type="text" id="q_kw" placeholder="例: 不具合｜故障　/　ベアリング" onkeydown="if(event.key==='Enter') runSearch()">
+    </div>
+    <div class="check"><input type="checkbox" id="q_regex"><label for="q_regex" style="margin:0; color:var(--ink); font-size:13px">正規表現で検索</label></div>
+    <div><button onclick="runSearch()">検索</button></div>
+    <div><button class="ghost" onclick="showAll(document.getElementById('q_table').value)">全件表示</button></div>
+  </div>
+
+  <div class="meta">
+    <span id="rcaption">　</span><span id="rcount"></span>
+    <span class="hint">▶ 色つきセルはクリックして直接編集（フォーカスを外すと自動保存）。各行の「削除」で行を消せます。</span>
+  </div>
+  <div class="table-wrap"><div id="results"></div></div>
+
+  <details>
+    <summary>検索のヒント（正規表現の例）</summary>
+    <div class="body">
+      <p>「正規表現で検索」をオフ＝普通の部分一致。オン＝正規表現。例:</p>
+      <p><code>不具合|故障</code> … どちらかを含む／ <code>^H[0-9]</code> … 先頭がH＋数字／ <code>交換$</code> … 末尾が「交換」</p>
+      <p class="hint">正規表現は全件を調べるため、件数が増えたら日付などで絞ると速くなります。</p>
+    </div>
+  </details>
+</div>
+
+<!-- 使い方・配布方法 -->
+<div class="card">
+  <h2>📦 このツールの持ち運び方・使い方</h2>
+  <details open>
+    <summary>クリックして詳細を表示／折りたたみ</summary>
+    <div class="body">
+      <p><strong>このHTMLはオフライン版です。インターネット接続は一切使いません。</strong>同じフォルダに置く必要があるファイルは次の2つだけです。</p>
+      <pre>work_db_tool.html   ← このツール本体
+sql-asm.js          ← SQLiteエンジン（同梱・改変不要）</pre>
+      <p>この2ファイルを同じフォルダに置いて <code>work_db_tool.html</code> をダブルクリックするだけで動きます。社内PCのどのフォルダ（デスクトップ、共有外のローカルフォルダなど）に置いても構いません。インストール作業は不要です。</p>
+      <p><strong>データの置き場所：</strong>登録したデータは保存ボタンを押すまでブラウザのメモリ上にしかありません。「💾 DBをファイルに保存」を押して <code>work.sqlite</code> として保存し、毎回そのファイルを「📂 DBを読込」で読み込んで続きから使ってください。<code>work.sqlite</code> は他人が見えない自分専用のフォルダに置くことをおすすめします。</p>
+      <p><strong>DB4Sとの連携：</strong>保存した <code>work.sqlite</code> は、申請が通った後に DB Browser for SQLite（DB4S）でもそのまま開けます。CSVの一括取り込みや簡単なグラフ、SQLCipherでの暗号化など、このHTMLツールにない機能が必要なときはDB4Sを併用してください。同じファイルを行き来して使えます。</p>
+    </div>
+  </details>
+</div>
+
+<script>
+// ====== テーブル定義 ======
+const TABLES = {
+  work_log: {
+    label: '作業記録',
+    textCols: ['work_date','title','detail','knowledge','people','tags'],
+    orderBy: 'work_date DESC, id DESC'
+  },
+  measurement: {
+    label: '測定データ目録',
+    textCols: ['test_date','test_name','conditions','csv_path','note'],
+    orderBy: 'test_date DESC, id DESC'
+  }
+};
+// 表の上で直接編集できる列（id と created_at は編集不可）
+const EDITABLE = {
+  work_log: new Set(['work_date','title','detail','knowledge','people','tags']),
+  measurement: new Set(['test_date','test_name','conditions','csv_path','peak','note'])
+};
+const NUMCOLS = new Set(['peak']); // 数値として保存する列
+// 列の日本語見出し
+const COL_JA = {
+  id:'ID', work_date:'日付', title:'見出し', detail:'内容', knowledge:'得られた知識',
+  people:'担当者', tags:'タグ', created_at:'登録日時',
+  test_date:'測定日', test_name:'測定名', conditions:'条件', csv_path:'CSVの場所',
+  peak:'代表値', note:'備考'
+};
+
+let SQL = null;   // initSqlJs() の戻り値（SQLコンストラクタ群）
+let db  = null;   // データベース
+let currentTable = 'work_log';
+
+function setStatus(msg, kind){
+  const el = document.getElementById('status');
+  el.textContent = msg; el.className = kind || '';
+}
+function nowStr(){
+  const d = new Date(); const p = n => String(n).padStart(2,'0');
+  return d.getFullYear()+'-'+p(d.getMonth()+1)+'-'+p(d.getDate())+' '+p(d.getHours())+':'+p(d.getMinutes());
+}
+function val(id){ return document.getElementById(id).value.trim(); }
+function clearForm(ids){ ids.forEach(id => document.getElementById(id).value=''); }
+function escapeHtml(s){ return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
+function escapeAttr(s){ return escapeHtml(s).replace(/"/g,'&quot;'); }
+
+// 日付の列（この列の隣に曜日を自動表示する）
+const DATECOLS = new Set(['work_date','test_date']);
+// 'YYYY-MM-DD' から日本語の曜日（月・火…）を返す。日付でなければ空文字。
+function weekdayJa(s){
+  if(s === null || s === undefined) return '';
+  const m = String(s).trim().match(/^(\d{4})-(\d{1,2})-(\d{1,2})/);
+  if(!m) return '';
+  const d = new Date(Number(m[1]), Number(m[2]) - 1, Number(m[3]));
+  if(isNaN(d.getTime())) return '';
+  return ['日','月','火','水','木','金','土'][d.getDay()];
+}
+
+// ====== 起動 ======
+async function boot(){
+  setStatus('読み込み中…（SQLiteエンジンを準備しています）');
+  try{
+    if(typeof initSqlJs === 'undefined'){
+      throw new Error('sql-asm.js が読み込めません。work_db_tool.html と同じフォルダに sql-asm.js があるか確認してください。');
+    }
+    // sql-asm.js は単一ファイル完結版（.wasm不要）。locateFile はそのまま使われないが念のため指定。
+    SQL = await initSqlJs({ locateFile: f => f });
+    db = new SQL.Database();
+    initSchema(); registerRegexp(); seedSample();
+    attachGridEditing();
+    onTableChange();
+    setStatus('準備完了（オフライン動作中）。入力・検索・編集できます。', 'ok');
+    showAll('work_log');
+  }catch(e){
+    setStatus('SQLiteエンジンを読み込めませんでした。sql-asm.js が同じフォルダにあるか確認してください。詳細: ' + e.message, 'err');
+  }
+}
+
+function initSchema(){
+  db.run(`
+    CREATE TABLE IF NOT EXISTS work_log (
+      id INTEGER PRIMARY KEY, work_date TEXT, title TEXT, detail TEXT,
+      knowledge TEXT, people TEXT, tags TEXT, created_at TEXT
+    );
+    CREATE INDEX IF NOT EXISTS idx_worklog_date ON work_log(work_date);
+    CREATE TABLE IF NOT EXISTS measurement (
+      id INTEGER PRIMARY KEY, test_date TEXT, test_name TEXT, conditions TEXT,
+      csv_path TEXT, peak REAL, note TEXT, created_at TEXT
+    );
+    CREATE INDEX IF NOT EXISTS idx_meas_date ON measurement(test_date);
+  `);
+}
+
+// X REGEXP Y は regexp(Y,X)＝(pattern,value) で呼ばれる
+function registerRegexp(){
+  db.create_function('regexp', function(pattern, value){
+    if(value === null || value === undefined) return 0;
+    try{ return new RegExp(pattern).test(String(value)) ? 1 : 0; }
+    catch(e){ return 0; }
+  });
+}
+
+function tableCount(t){
+  const r = db.exec('SELECT COUNT(*) FROM ' + t);
+  return r.length ? r[0].values[0][0] : 0;
+}
+
+function seedSample(){
+  if(tableCount('work_log') > 0) return;
+  const w = [
+    ['2025-06-20','モーターM-3 不具合調査',
+      '起動時に異音。電流値が定格より高め。\n軸受の温度上昇を確認。\n暫定でグリス補給し様子見、来週再点検予定。',
+      'グリス補給だけでは根本解決にならない場合あり。\n軸受の交換タイミングは温度＋振動で判断する。',
+      '田中, 鈴木','調査, モーター, 故障'],
+    ['2025-06-19','制御盤 配線確認',
+      '端子台の緩みを点検。2箇所増し締め。\n図面と実配線の差異は無し。',
+      '増し締めトルクは規定値を守る。やり過ぎは破損の原因。',
+      '田中','点検, 制御盤'],
+    ['2025-06-18','ポンプP-12 定期点検',
+      'ベアリングから僅かな異音。\nメカニカルシールからの漏れは無し。\n次回ベアリング交換を推奨。',
+      'ベアリング交換の判断は早めが安全。突発停止を防げる。',
+      '佐藤, 鈴木','点検, ポンプ, ベアリング']
+  ];
+  w.forEach(r => db.run(
+    'INSERT INTO work_log (work_date,title,detail,knowledge,people,tags,created_at) VALUES (?,?,?,?,?,?,?)',
+    [r[0],r[1],r[2],r[3],r[4],r[5], nowStr()]
+  ));
+  const m = [
+    ['2025-06-20','フレーム全体 ハンマリング','加振点:上面 / Z方向','D:\\data\\2025-06-20_frame.csv',21.0,'共振が予想帯にあり'],
+    ['2025-06-19','H205 ブラケット','加振点:側面 / Y方向','D:\\data\\2025-06-19_H205.csv',8.7,''],
+    ['2025-06-17','H100 ハウジング','加振点:正面 / X方向','D:\\data\\2025-06-17_H100.csv',12.3,'基準データ']
+  ];
+  m.forEach(r => db.run(
+    'INSERT INTO measurement (test_date,test_name,conditions,csv_path,peak,note,created_at) VALUES (?,?,?,?,?,?,?)',
+    [r[0],r[1],r[2],r[3],r[4],r[5], nowStr()]
+  ));
+}
+
+// ====== 入力（新規追加）======
+function addWorkLog(){
+  if(!db) return;
+  if(!val('w_title') && !val('w_detail')){ setStatus('見出しか内容を入力してください。','err'); return; }
+  db.run('INSERT INTO work_log (work_date,title,detail,knowledge,people,tags,created_at) VALUES (?,?,?,?,?,?,?)',
+    [val('w_date'),val('w_title'),val('w_detail'),val('w_knowledge'),val('w_people'),val('w_tags'),nowStr()]);
+  clearForm(['w_date','w_title','w_detail','w_knowledge','w_people','w_tags']);
+  setStatus('作業記録を登録しました。','ok');
+  showAll('work_log');
+}
+function addMeasurement(){
+  if(!db) return;
+  if(!val('m_name')){ setStatus('測定名を入力してください。','err'); return; }
+  const p = parseFloat(val('m_peak'));
+  db.run('INSERT INTO measurement (test_date,test_name,conditions,csv_path,peak,note,created_at) VALUES (?,?,?,?,?,?,?)',
+    [val('m_date'),val('m_name'),val('m_conditions'),val('m_path'), isNaN(p)?null:p, val('m_note'),nowStr()]);
+  clearForm(['m_date','m_name','m_conditions','m_path','m_peak','m_note']);
+  setStatus('測定目録に追加しました。','ok');
+  showAll('measurement');
+}
+
+// ====== 検索・表示 ======
+function onTableChange(){
+  const t = document.getElementById('q_table').value;
+  const sel = document.getElementById('q_col');
+  sel.innerHTML = '<option value="*">すべての列</option>' +
+    TABLES[t].textCols.map(c => `<option value="${c}">${COL_JA[c]||c}</option>`).join('');
+}
+function runSearch(){
+  if(!db) return;
+  const table = document.getElementById('q_table').value;
+  const col   = document.getElementById('q_col').value;
+  const kw    = document.getElementById('q_kw').value;
+  const useRe = document.getElementById('q_regex').checked;
+  if(!kw.trim()){ showAll(table); return; }
+  const meta = TABLES[table];
+  const mk = c => useRe ? (c + ' REGEXP ?') : (c + ' LIKE ?');
+  const pv = () => useRe ? kw : ('%' + kw + '%');
+  let where, params;
+  if(col === '*'){
+    where = '(' + meta.textCols.map(mk).join(' OR ') + ')';
+    params = meta.textCols.map(() => pv());
+  }else{
+    where = mk(col); params = [pv()];
+  }
+  renderQuery(`SELECT * FROM ${table} WHERE ${where} ORDER BY ${meta.orderBy} LIMIT 500`,
+    params, `検索結果（${meta.label}）`, table);
+}
+function showAll(table){
+  if(!db) return;
+  document.getElementById('q_table').value = table; onTableChange();
+  const meta = TABLES[table];
+  renderQuery(`SELECT * FROM ${table} ORDER BY ${meta.orderBy} LIMIT 500`, [], `全件（${meta.label}）`, table);
+}
+function renderQuery(sql, params, caption, table){
+  currentTable = table;
+  let cols=[], rows=[];
+  try{
+    const stmt = db.prepare(sql); stmt.bind(params);
+    cols = stmt.getColumnNames();
+    while(stmt.step()) rows.push(stmt.get());
+    stmt.free();
+  }catch(e){
+    document.getElementById('results').innerHTML = '<p class="err" style="padding:12px">クエリエラー: ' + escapeHtml(e.message) + '</p>';
+    document.getElementById('rcaption').textContent = caption;
+    document.getElementById('rcount').textContent = ''; return;
+  }
+  document.getElementById('rcaption').textContent = caption;
+  document.getElementById('rcount').textContent = rows.length + ' 件';
+  if(rows.length === 0){
+    document.getElementById('results').innerHTML = '<p style="padding:12px; color:var(--sub)">該当なし</p>'; return;
+  }
+  const editable = EDITABLE[table] || new Set();
+  const idIdx = cols.indexOf('id');
+  let html = '<table class="grid"><thead><tr><th>操作</th>';
+  cols.forEach(c => {
+    html += '<th>' + escapeHtml(COL_JA[c] || c) + '</th>';
+    if(DATECOLS.has(c)) html += '<th>曜日</th>';
+  });
+  html += '</tr></thead><tbody>';
+  rows.forEach(r => {
+    const rid = idIdx >= 0 ? r[idIdx] : '';
+    html += '<tr><td class="op"><button class="del" data-id="' + escapeAttr(rid) + '">削除</button></td>';
+    r.forEach((cell, i) => {
+      const cn = cols[i];
+      const txt = (cell === null || cell === undefined) ? '' : escapeHtml(cell);
+      if(editable.has(cn)){
+        const numcls = NUMCOLS.has(cn) ? ' num' : (cn === 'csv_path' ? ' path' : '');
+        html += '<td class="edit' + numcls + '" contenteditable="true" data-id="' + escapeAttr(rid) +
+                '" data-col="' + escapeAttr(cn) + '" data-type="' + (NUMCOLS.has(cn)?'num':'text') + '">' + txt + '</td>';
+      }else{
+        let cls = '';
+        if(cn === 'id') cls = ' class="num"';
+        else if(cn === 'created_at') cls = ' class="num"';
+        html += '<td' + cls + '>' + txt + '</td>';
+      }
+      // 日付列の直後に、曜日（読み取り専用・自動計算）の列を足す
+      if(DATECOLS.has(cn)){
+        const wd = weekdayJa(cell);
+        html += '<td class="wd">' + (wd ? '（' + wd + '）' : '') + '</td>';
+      }
+    });
+    html += '</tr>';
+  });
+  html += '</tbody></table>';
+  document.getElementById('results').innerHTML = html;
+}
+
+// ====== 表の上で直接 編集／削除 ======
+function attachGridEditing(){
+  const box = document.getElementById('results');
+  // 編集開始時に元の値を控える
+  box.addEventListener('focusin', e => {
+    const td = e.target.closest('td.edit');
+    if(td) td.dataset.orig = td.innerText;
+  });
+  // フォーカスを外したら、変更があれば自動保存
+  box.addEventListener('focusout', e => {
+    const td = e.target.closest('td.edit');
+    if(!td) return;
+    const newVal = td.innerText;
+    if(newVal === td.dataset.orig) return;
+    saveCell(td.dataset.id, td.dataset.col, newVal, td.dataset.type, td);
+  });
+  // 削除ボタン
+  box.addEventListener('click', e => {
+    const b = e.target.closest('button.del');
+    if(!b) return;
+    if(!confirm('この行を削除します。よろしいですか？')) return;
+    try{
+      db.run('DELETE FROM ' + currentTable + ' WHERE id=?', [b.dataset.id]);
+      const tr = b.closest('tr'); if(tr) tr.remove();
+      const cnt = document.getElementById('rcount');
+      const n = parseInt(cnt.textContent) - 1;
+      cnt.textContent = (isNaN(n)?0:n) + ' 件';
+      setStatus('1行を削除しました。','ok');
+    }catch(err){ setStatus('削除に失敗: ' + err.message, 'err'); }
+  });
+}
+function saveCell(id, col, newVal, type, td){
+  try{
+    let value;
+    if(type === 'num'){
+      const n = parseFloat(newVal);
+      value = (newVal.trim() === '' || isNaN(n)) ? null : n;
+    }else{
+      value = newVal;
+    }
+    db.run('UPDATE ' + currentTable + ' SET ' + col + '=? WHERE id=?', [value, id]);
+    td.dataset.orig = newVal;
+    // 日付を書き換えたら、隣の曜日セルも更新する
+    if(DATECOLS.has(col)){
+      const wdCell = td.nextElementSibling;
+      if(wdCell && wdCell.classList.contains('wd')){
+        const wd = weekdayJa(newVal);
+        wdCell.textContent = wd ? '（' + wd + '）' : '';
+      }
+    }
+    setStatus('保存しました（' + (COL_JA[col]||col) + '）。', 'ok');
+  }catch(err){ setStatus('保存に失敗: ' + err.message, 'err'); }
+}
+
+// ====== 保存・読込 ======
+function saveDb(){
+  if(!db){ setStatus('まだ準備ができていません。','err'); return; }
+  const data = db.export();
+  const blob = new Blob([data], {type:'application/octet-stream'});
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob); a.download = 'work.sqlite';
+  document.body.appendChild(a); a.click(); a.remove(); URL.revokeObjectURL(a.href);
+  setStatus('work.sqlite を保存しました。','ok');
+}
+function loadDb(file){
+  if(!SQL){ setStatus('エンジンの準備中です。少し待ってからお試しください。','err'); return; }
+  const r = new FileReader();
+  r.onload = () => {
+    try{
+      db = new SQL.Database(new Uint8Array(r.result));
+      initSchema(); registerRegexp();
+      setStatus('DBファイルを読み込みました。','ok');
+      showAll('work_log');
+    }catch(e){ setStatus('読込に失敗: ' + e.message, 'err'); }
+  };
+  r.readAsArrayBuffer(file);
+}
+
+boot();
+</script>
+</body>
+</html>

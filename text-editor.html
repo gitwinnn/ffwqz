@@ -1,0 +1,717 @@
+<!DOCTYPE html>
+<html lang="ja" data-theme="dark">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>テキスト閲覧・編集ツール</title>
+<!--
+  ============================================================
+  テキスト閲覧・編集ツール（単一HTML・オフライン動作）
+  ------------------------------------------------------------
+  ・外部ファイル/CDN/フォントを一切使いません。file:// で動きます。
+  ・「フォルダを開く」で選んだフォルダ内のテキストファイルを一覧表示。
+  ・右ペインで閲覧・編集。Ctrl+S（または保存ボタン）で上書き保存。
+  ・正規表現検索＆ヒットのハイライト、前後ジャンプに対応。
+
+  ▼動作モードは自動で切り替わります
+   ・対応ブラウザ（Edge / Chrome）… その場で上書き保存できます。
+   ・未対応/制限時 …「ダウンロード保存」（同名で保存し直す）になります。
+
+  ▼文字コードについて（重要）
+   ・読み込みは「自動判定 / UTF-8 / Shift_JIS / EUC-JP」に対応。
+   ・保存は UTF-8（必要ならBOM付き）です。Shift_JISでの保存は非対応。
+     → Shift_JISのファイルを保存するとUTF-8に変換されます（上部に注意表示）。
+  ============================================================
+-->
+<style>
+  :root{
+    --bg:#10131a;          /* 画面の地色 */
+    --panel:#171b24;       /* パネル */
+    --panel-2:#1d222d;     /* 一段明るいパネル */
+    --elevated:#222836;    /* ホバー等 */
+    --border:#2b3340;      /* 罫線 */
+    --border-soft:#232a36;
+    --text:#dde3ec;        /* 本文 */
+    --muted:#8a94a6;       /* 補助テキスト */
+    --muted-2:#6b7280;
+    --accent:#5aa9ff;      /* アクセント（青） */
+    --accent-weak:rgba(90,169,255,.16);
+    --good:#57c08a;
+    --warn:#e0b341;
+    --danger:#ef6b6b;
+    --mark:rgba(224,179,65,.30);      /* 検索ヒット（通常） */
+    --mark-border:rgba(224,179,65,.55);
+    --mark-active:#ff9d2e;            /* 検索ヒット（選択中） */
+    --mono: "Cascadia Mono","Consolas","Courier New","Source Han Code JP","MS Gothic",monospace;
+    --ui: "Segoe UI","Yu Gothic UI","Meiryo",system-ui,sans-serif;
+    --fs-editor:14px;
+    --lh-editor:22px;
+    --pad-editor:14px;
+  }
+  *{box-sizing:border-box;}
+  html,body{height:100%;}
+  body{
+    margin:0; background:var(--bg); color:var(--text);
+    font-family:var(--ui); font-size:13px;
+    display:flex; flex-direction:column; overflow:hidden;
+  }
+
+  /* ---- ツールバー ---- */
+  .toolbar{
+    display:flex; align-items:center; gap:8px;
+    padding:8px 12px; background:var(--panel);
+    border-bottom:1px solid var(--border); flex:0 0 auto;
+  }
+  .toolbar .spacer{flex:1 1 auto;}
+  button, select{
+    font-family:var(--ui); font-size:13px; color:var(--text);
+    background:var(--panel-2); border:1px solid var(--border);
+    border-radius:7px; padding:6px 11px; cursor:pointer;
+    line-height:1.2; white-space:nowrap;
+  }
+  button:hover, select:hover{background:var(--elevated); border-color:#37414f;}
+  button:active{transform:translateY(1px);}
+  button:disabled{opacity:.45; cursor:not-allowed;}
+  button.icon{padding:6px 9px;}
+  button.primary{background:var(--accent-weak); border-color:#3a6da8; color:#cfe4ff;}
+  button.primary:hover{background:rgba(90,169,255,.26);}
+  select{padding:6px 8px;}
+  label.opt{display:inline-flex; align-items:center; gap:5px; color:var(--muted); user-select:none; cursor:pointer;}
+  label.opt input{accent-color:var(--accent); width:14px; height:14px;}
+  .field-label{color:var(--muted); margin-right:-2px;}
+  #folderName{color:var(--muted); max-width:280px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;}
+  *:focus-visible{outline:2px solid var(--accent); outline-offset:1px;}
+
+  /* ---- 注意バー ---- */
+  .notice{
+    display:none; align-items:center; gap:10px;
+    padding:7px 12px; background:rgba(224,179,65,.10);
+    border-bottom:1px solid rgba(224,179,65,.30); color:#f0d79a; flex:0 0 auto;
+  }
+  .notice.show{display:flex;}
+  .notice .x{margin-left:auto; cursor:pointer; color:#f0d79a; border:none; background:transparent; padding:2px 6px; border-radius:5px;}
+  .notice .x:hover{background:rgba(224,179,65,.18);}
+
+  /* ---- 2ペイン ---- */
+  .panes{flex:1 1 auto; display:grid; grid-template-columns:var(--leftw,280px) 6px 1fr; min-height:0;}
+  .left{display:flex; flex-direction:column; min-width:0; background:var(--panel); border-right:1px solid var(--border);}
+  .left .lhead{padding:10px 10px 8px; border-bottom:1px solid var(--border-soft); display:flex; flex-direction:column; gap:8px;}
+  #fileFilter{
+    width:100%; padding:7px 10px; border-radius:7px;
+    background:var(--bg); border:1px solid var(--border); color:var(--text); font-family:var(--ui);
+  }
+  #fileFilter::placeholder{color:var(--muted-2);}
+  .left .lopts{display:flex; align-items:center; justify-content:space-between; gap:8px;}
+  .filelist{list-style:none; margin:0; padding:6px; overflow:auto; flex:1 1 auto;}
+  .filelist li{
+    padding:7px 9px; border-radius:6px; cursor:pointer; color:var(--text);
+    white-space:nowrap; overflow:hidden; text-overflow:ellipsis; display:flex; align-items:center; gap:7px;
+  }
+  .filelist li .fi{color:var(--muted); flex:0 0 auto;}
+  .filelist li:hover{background:var(--elevated);}
+  .filelist li.active{background:var(--accent-weak); color:#dcebff; box-shadow:inset 2px 0 0 var(--accent);}
+  .filelist li .dot{margin-left:auto; width:7px; height:7px; border-radius:50%; background:var(--warn); flex:0 0 auto; visibility:hidden;}
+  .filelist li.dirty .dot{visibility:visible;}
+  .filelist .empty{color:var(--muted-2); padding:14px 10px; line-height:1.7;}
+
+  /* スプリッター */
+  .splitter{cursor:col-resize; background:transparent; position:relative;}
+  .splitter::after{content:""; position:absolute; left:2px; top:0; width:2px; height:100%; background:var(--border);}
+  .splitter:hover::after{background:var(--accent);}
+
+  /* ---- 右ペイン ---- */
+  .right{display:flex; flex-direction:column; min-width:0; min-height:0; background:var(--bg);}
+  .searchbar{
+    display:flex; align-items:center; gap:8px; padding:8px 10px;
+    background:var(--panel); border-bottom:1px solid var(--border); flex:0 0 auto;
+  }
+  #search{
+    flex:1 1 auto; min-width:80px; padding:7px 10px; border-radius:7px;
+    background:var(--bg); border:1px solid var(--border); color:var(--text); font-family:var(--mono);
+  }
+  #search::placeholder{color:var(--muted-2); font-family:var(--ui);}
+  #search.bad{border-color:var(--danger);}
+  #matchInfo{color:var(--muted); min-width:64px; text-align:right; font-variant-numeric:tabular-nums;}
+  #matchInfo.bad{color:var(--danger);}
+
+  /* エディタ（背面ハイライト＋前面テキストエリアの重ね合わせ） */
+  .editorWrap{position:relative; flex:1 1 auto; min-height:0; border-top:1px solid transparent;}
+  .backdrop, #editor{
+    position:absolute; top:0; left:0; margin:0; border:0;
+    font-family:var(--mono); font-size:var(--fs-editor); line-height:var(--lh-editor);
+    padding:var(--pad-editor); letter-spacing:0; tab-size:4; -moz-tab-size:4;
+    white-space:pre-wrap; word-break:break-word; overflow-wrap:anywhere;
+  }
+  .backdrop{
+    z-index:1; pointer-events:none; overflow:hidden; color:var(--text);
+    width:100%; height:100%; user-select:none;
+  }
+  .backdrop .mark{background:var(--mark); border-radius:2px; box-shadow:inset 0 0 0 1px var(--mark-border);}
+  .backdrop .mark.active{background:var(--mark-active); color:#141414; box-shadow:none;}
+  #editor{
+    z-index:2; width:100%; height:100%; resize:none; overflow:auto;
+    background:transparent; color:transparent; caret-color:var(--accent);
+  }
+  #editor::placeholder{color:var(--muted-2);}
+  #editor::selection{background:rgba(90,169,255,.32);}
+  /* スクロールバー（暗色） */
+  .filelist::-webkit-scrollbar, #editor::-webkit-scrollbar{width:12px; height:12px;}
+  .filelist::-webkit-scrollbar-thumb, #editor::-webkit-scrollbar-thumb{background:#313a47; border-radius:8px; border:3px solid transparent; background-clip:content-box;}
+  .filelist::-webkit-scrollbar-thumb:hover, #editor::-webkit-scrollbar-thumb:hover{background:#3d4856; background-clip:content-box;}
+  .filelist::-webkit-scrollbar-track, #editor::-webkit-scrollbar-track{background:transparent;}
+
+  /* ---- ステータスバー ---- */
+  .statusbar{
+    display:flex; align-items:center; gap:14px; padding:5px 12px;
+    background:var(--panel); border-top:1px solid var(--border); color:var(--muted);
+    flex:0 0 auto; font-variant-numeric:tabular-nums;
+  }
+  .statusbar .pill{color:var(--text);}
+  .statusbar .dirty{color:var(--warn);}
+  .statusbar .mode{margin-left:auto;}
+  .statusbar .mode b{color:var(--accent);}
+  kbd{font-family:var(--mono); font-size:11px; background:var(--panel-2); border:1px solid var(--border); border-bottom-width:2px; border-radius:5px; padding:1px 5px; color:var(--text);}
+
+  /* 空状態の中央メッセージ */
+  .welcome{position:absolute; inset:0; z-index:0; display:flex; align-items:center; justify-content:center; padding:24px; pointer-events:none;}
+  .welcome .card{max-width:520px; color:var(--muted); line-height:1.9; text-align:center;}
+  .welcome .card h2{color:var(--text); font-weight:600; font-size:15px; margin:0 0 10px;}
+  .welcome.hide{display:none;}
+</style>
+</head>
+<body>
+
+  <div class="toolbar">
+    <button id="openFolder" class="primary">📁 フォルダを開く</button>
+    <button id="reload" class="icon" title="フォルダを再読み込み" disabled>↻</button>
+    <span id="folderName">フォルダ未選択</span>
+    <span class="spacer"></span>
+    <span class="field-label">読込</span>
+    <select id="readEnc" title="読み込み時の文字コード">
+      <option value="auto">自動判定</option>
+      <option value="utf-8">UTF-8</option>
+      <option value="shift_jis">Shift_JIS</option>
+      <option value="euc-jp">EUC-JP</option>
+    </select>
+    <span class="field-label">保存</span>
+    <select id="saveEnc" title="保存時の文字コード">
+      <option value="utf-8">UTF-8</option>
+      <option value="utf-8-bom">UTF-8(BOM)</option>
+    </select>
+    <button id="saveBtn" disabled>💾 保存</button>
+  </div>
+
+  <div class="notice" id="notice">
+    <span id="noticeText"></span>
+    <button class="x" id="noticeClose" title="閉じる">×</button>
+  </div>
+
+  <div class="panes" id="panes">
+    <aside class="left">
+      <div class="lhead">
+        <input id="fileFilter" type="text" placeholder="ファイル名でしぼり込み" autocomplete="off">
+        <div class="lopts">
+          <label class="opt" title="拡張子に関わらずフォルダ直下の全ファイルを表示"><input type="checkbox" id="showAll"> すべて表示</label>
+          <span id="fileCount" style="color:var(--muted-2)"></span>
+        </div>
+      </div>
+      <ul class="filelist" id="fileList">
+        <li class="empty">「フォルダを開く」を押して<br>テキストの入ったフォルダを選んでください。</li>
+      </ul>
+    </aside>
+
+    <div class="splitter" id="splitter" title="ドラッグで幅を調整"></div>
+
+    <section class="right">
+      <div class="searchbar">
+        <input id="search" type="text" placeholder="検索（正規表現）  例: error|warning" autocomplete="off" disabled>
+        <label class="opt" title="オフにすると入力文字をそのまま検索"><input type="checkbox" id="useRegex" checked> 正規表現</label>
+        <label class="opt"><input type="checkbox" id="ignoreCase"> 大小無視</label>
+        <button id="prev" class="icon" title="前へ (Shift+Enter)" disabled>▲</button>
+        <button id="next" class="icon" title="次へ (Enter)" disabled>▼</button>
+        <span id="matchInfo">0 件</span>
+      </div>
+
+      <div class="editorWrap" id="editorWrap">
+        <div class="welcome" id="welcome">
+          <div class="card">
+            <h2>ファイルを選ぶと、ここで閲覧・編集できます</h2>
+            左の一覧からファイルをクリック。<br>
+            編集して <kbd>Ctrl</kbd>+<kbd>S</kbd> で上書き保存、<kbd>Ctrl</kbd>+<kbd>F</kbd> で検索へ移動します。
+          </div>
+        </div>
+        <div class="backdrop" id="backdrop" aria-hidden="true"></div>
+        <textarea id="editor" spellcheck="false" placeholder="" disabled></textarea>
+      </div>
+    </section>
+  </div>
+
+  <div class="statusbar">
+    <span id="stFile" class="pill">—</span>
+    <span id="stPos">行 0, 列 0</span>
+    <span id="stCount">0 文字</span>
+    <span id="stEnc"></span>
+    <span id="stDirty" class="dirty"></span>
+    <span class="mode" id="stMode"></span>
+  </div>
+
+  <!-- 非対応ブラウザ用：フォルダ選択フォールバック -->
+  <input id="fallbackInput" type="file" webkitdirectory directory multiple style="display:none">
+
+<script>
+"use strict";
+(function(){
+  // ====== 要素参照 ======
+  const $ = id => document.getElementById(id);
+  const editor   = $('editor');
+  const backdrop = $('backdrop');
+  const editorWrap = $('editorWrap');
+  const welcome  = $('welcome');
+  const fileList = $('fileList');
+  const fileFilter = $('fileFilter');
+  const showAll  = $('showAll');
+  const fileCount= $('fileCount');
+  const search   = $('search');
+  const useRegex = $('useRegex');
+  const ignoreCase = $('ignoreCase');
+  const matchInfo = $('matchInfo');
+  const readEnc  = $('readEnc');
+  const saveEnc  = $('saveEnc');
+  const saveBtn  = $('saveBtn');
+  const reloadBtn= $('reload');
+  const folderName = $('folderName');
+  const notice   = $('notice');
+  const noticeText = $('noticeText');
+
+  // ====== 状態 ======
+  const hasFSA = ('showDirectoryPicker' in window);
+  let usingFallback = false;
+  let dirHandle = null;
+  let entries = [];            // [{name, handle?|file?}]
+  let current = null;          // {name, handle?|file?}
+  let savedText = '';          // 保存済み内容
+  let readEncodingUsed = '';   // 実際に読み込んだ文字コード
+  let hadBOM = false;
+  let matches = [];            // [[start,end], ...]
+  let activeIndex = 0;
+  let searchError = false;
+
+  // テキストとして扱う拡張子
+  const TEXT_EXT = new Set(['txt','text','md','markdown','log','csv','tsv','json','xml','yml','yaml',
+    'ini','cfg','conf','properties','env','toml','js','mjs','ts','vbs','vba','bas','bat','cmd','ps1',
+    'html','htm','css','scss','sql','py','rb','php','java','c','h','cpp','hpp','cs','go','rs','sh',
+    'lua','pl','r','m','tex','srt','vtt','diff','patch','gitignore','editorconfig']);
+
+  function isTextName(name){
+    const dot = name.lastIndexOf('.');
+    if(dot < 0) return false;              // 拡張子なしは既定で非表示
+    const ext = name.slice(dot+1).toLowerCase();
+    return TEXT_EXT.has(ext);
+  }
+
+  // ====== 文字コード処理 ======
+  function bytesHaveUtf8BOM(buf){
+    const b = new Uint8Array(buf, 0, Math.min(3, buf.byteLength));
+    return b.length>=3 && b[0]===0xEF && b[1]===0xBB && b[2]===0xBF;
+  }
+  function decodeBuffer(buf, mode){
+    hadBOM = bytesHaveUtf8BOM(buf);
+    if(mode === 'auto'){
+      try{
+        const t = new TextDecoder('utf-8', {fatal:true}).decode(buf);
+        readEncodingUsed = 'UTF-8' + (hadBOM ? '(BOM)' : '');
+        return t;
+      }catch(e){
+        readEncodingUsed = 'Shift_JIS';
+        return new TextDecoder('shift_jis').decode(buf);
+      }
+    }
+    const label = {'utf-8':'UTF-8','shift_jis':'Shift_JIS','euc-jp':'EUC-JP'}[mode] || mode;
+    readEncodingUsed = label + (mode==='utf-8' && hadBOM ? '(BOM)' : '');
+    return new TextDecoder(mode).decode(buf);
+  }
+  function encodeText(text){
+    // TextEncoder は UTF-8 のみ。BOM付きは先頭3バイトを付加。
+    const body = new TextEncoder().encode(text);
+    if(saveEnc.value === 'utf-8-bom'){
+      const out = new Uint8Array(body.length + 3);
+      out.set([0xEF,0xBB,0xBF], 0); out.set(body, 3);
+      return out;
+    }
+    return body;
+  }
+
+  // ====== 注意バー ======
+  function showNotice(msg){ noticeText.textContent = msg; notice.classList.add('show'); }
+  function hideNotice(){ notice.classList.remove('show'); }
+  $('noticeClose').addEventListener('click', hideNotice);
+
+  // ====== フォルダを開く ======
+  async function openFolder(){
+    if(hasFSA){
+      try{
+        dirHandle = await window.showDirectoryPicker({mode:'readwrite'});
+        usingFallback = false;
+        await listFromHandle();
+      }catch(e){
+        if(e && e.name === 'AbortError') return;        // ユーザーがキャンセル
+        // 権限拒否やプレビュー内などで失敗 → フォールバックを案内
+        showNotice('このブラウザ/環境ではフォルダへの直接アクセスができませんでした。ダウンロードしてローカルで開くか、フォルダ選択（ダウンロード保存モード）を使ってください。');
+        $('fallbackInput').click();
+      }
+    }else{
+      $('fallbackInput').click();
+    }
+  }
+
+  async function listFromHandle(){
+    entries = [];
+    for await (const ent of dirHandle.values()){
+      if(ent.kind === 'file') entries.push({name: ent.name, handle: ent});
+    }
+    afterList(dirHandle.name);
+  }
+
+  $('fallbackInput').addEventListener('change', (e)=>{
+    const files = Array.from(e.target.files || []);
+    if(!files.length) return;
+    usingFallback = true;
+    // フォルダ直下のみ（webkitRelativePath が "フォルダ名/ファイル名" の2階層）を既定とする
+    entries = files.map(f => ({name: f.name, file: f, rel: f.webkitRelativePath || f.name}));
+    const root = (files[0].webkitRelativePath || '').split('/')[0] || '選択フォルダ';
+    afterList(root);
+    e.target.value = '';  // 同じフォルダを再選択できるように
+  });
+
+  function afterList(rootName){
+    entries.sort((a,b)=> a.name.localeCompare(b.name, 'ja'));
+    folderName.textContent = rootName + (usingFallback ? '（ダウンロード保存モード）' : '');
+    folderName.title = rootName;
+    reloadBtn.disabled = usingFallback;   // フォールバックは再読込不可
+    renderList();
+    updateModeLabel();
+  }
+
+  // ====== ファイル一覧描画 ======
+  function visibleEntries(){
+    const q = fileFilter.value.trim().toLowerCase();
+    return entries.filter(en=>{
+      // フォールバック時は直下のみ（"すべて表示"でサブフォルダも含む）
+      if(usingFallback && !showAll.checked){
+        const depth = (en.rel.match(/\//g) || []).length;
+        if(depth > 1) return false;
+      }
+      if(!showAll.checked && !isTextName(en.name)) return false;
+      if(q && !en.name.toLowerCase().includes(q)) return false;
+      return true;
+    });
+  }
+
+  function renderList(){
+    const list = visibleEntries();
+    fileList.innerHTML = '';
+    if(!entries.length){
+      fileList.innerHTML = '<li class="empty">「フォルダを開く」を押して<br>テキストの入ったフォルダを選んでください。</li>';
+      fileCount.textContent = '';
+      return;
+    }
+    if(!list.length){
+      fileList.innerHTML = '<li class="empty">該当するファイルがありません。<br>「すべて表示」を試すか、しぼり込み語を変えてください。</li>';
+      fileCount.textContent = '全 ' + entries.length + ' 件';
+      return;
+    }
+    for(const en of list){
+      const li = document.createElement('li');
+      li.textContent = en.name;
+      const fi = document.createElement('span'); fi.className='fi'; fi.textContent='📄';
+      li.prepend(fi);
+      const dot = document.createElement('span'); dot.className='dot'; li.appendChild(dot);
+      if(current && current.name === en.name) li.classList.add('active');
+      if(current && current.name === en.name && isDirty()) li.classList.add('dirty');
+      li.addEventListener('click', ()=> tryOpen(en));
+      fileList.appendChild(li);
+    }
+    fileCount.textContent = '表示 ' + list.length + ' / 全 ' + entries.length + ' 件';
+  }
+
+  // ====== ファイルを開く ======
+  async function tryOpen(en){
+    if(current && isDirty()){
+      if(!confirm('保存していない変更があります。破棄して別のファイルを開きますか？')) return;
+    }
+    try{
+      const file = en.handle ? await en.handle.getFile() : en.file;
+      const buf = await file.arrayBuffer();
+      const text = decodeBuffer(buf, readEnc.value);
+      current = en;
+      savedText = text;
+      setEditorValue(text);
+      enableEditing(true);
+      hideNotice();
+      if(readEncodingUsed.startsWith('Shift_JIS') || readEncodingUsed.startsWith('EUC')){
+        showNotice('このファイルは「' + readEncodingUsed + '」として読み込みました。保存すると ' + saveEnc.value.toUpperCase().replace('-BOM','(BOM)') + ' に変換されます。');
+      }
+      activeIndex = 0;
+      renderHighlights();
+      updateStatus();
+      renderList();
+      editor.focus();
+      editor.setSelectionRange(0,0);
+      editor.scrollTop = 0; syncScroll();
+    }catch(e){
+      showNotice('ファイルを開けませんでした: ' + (e && e.message ? e.message : e));
+    }
+  }
+
+  function setEditorValue(text){
+    editor.value = text;
+    welcome.classList.add('hide');
+  }
+  function enableEditing(on){
+    editor.disabled = !on;
+    search.disabled = !on;
+    saveBtn.disabled = !on;
+    $('prev').disabled = !on; $('next').disabled = !on;
+  }
+
+  // ====== 保存 ======
+  async function save(){
+    if(!current) return;
+    const text = editor.value;
+    if(usingFallback || !current.handle){
+      // ダウンロード保存（同名）
+      const blob = new Blob([encodeText(text)], {type:'text/plain'});
+      const a = document.createElement('a');
+      a.href = URL.createObjectURL(blob);
+      a.download = current.name;
+      document.body.appendChild(a); a.click(); a.remove();
+      setTimeout(()=> URL.revokeObjectURL(a.href), 1000);
+      savedText = text;
+      renderList(); updateStatus();
+      flashStatus('ダウンロードしました（同名で保存し直してください）');
+      return;
+    }
+    try{
+      const w = await current.handle.createWritable();
+      await w.write(encodeText(text));
+      await w.close();
+      savedText = text;
+      renderList(); updateStatus();
+      flashStatus('保存しました（' + saveEnc.value.toUpperCase().replace('-BOM','(BOM)') + '）');
+    }catch(e){
+      showNotice('保存に失敗しました: ' + (e && e.message ? e.message : e) +
+                 ' （フォルダ選択時に「編集」を許可しているか確認してください）');
+    }
+  }
+
+  // ====== 検索＆ハイライト ======
+  function escapeHTML(s){
+    return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+  }
+  function buildRegex(){
+    const q = search.value;
+    searchError = false;
+    if(!q) return null;
+    let flags = 'g'; if(ignoreCase.checked) flags += 'i';
+    let pattern = useRegex.checked ? q : q.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    try{ return new RegExp(pattern, flags); }
+    catch(e){ searchError = true; return null; }
+  }
+
+  function renderHighlights(){
+    const text = editor.value;
+    const re = buildRegex();
+    matches = [];
+    let html;
+    if(!re){
+      html = escapeHTML(text);
+    }else{
+      let out = '', last = 0, m, i = 0;
+      re.lastIndex = 0;
+      while((m = re.exec(text)) !== null){
+        const start = m.index, end = start + m[0].length;
+        out += escapeHTML(text.slice(last, start));
+        const active = (i === activeIndex);
+        out += '<span class="mark' + (active ? ' active' : '') + '" data-i="' + i + '">'
+             + escapeHTML(m[0] || '') + '</span>';
+        last = end; matches.push([start, end]); i++;
+        if(m.index === re.lastIndex) re.lastIndex++; // ゼロ幅マッチの無限ループ防止
+        if(i > 50000) break;                          // 安全弁
+      }
+      out += escapeHTML(text.slice(last));
+      html = out;
+    }
+    backdrop.innerHTML = html + '\n';  // 末尾改行のずれ対策
+    syncSize();
+    updateMatchInfo();
+  }
+
+  function updateMatchInfo(){
+    if(searchError){
+      matchInfo.textContent = '正規表現が不正';
+      matchInfo.classList.add('bad'); search.classList.add('bad');
+      return;
+    }
+    matchInfo.classList.remove('bad'); search.classList.remove('bad');
+    if(!search.value){ matchInfo.textContent = '0 件'; return; }
+    if(!matches.length){ matchInfo.textContent = '一致なし'; return; }
+    matchInfo.textContent = (activeIndex+1) + ' / ' + matches.length + ' 件';
+  }
+
+  function go(delta){
+    if(!matches.length) return;
+    activeIndex = (activeIndex + delta + matches.length) % matches.length;
+    renderHighlights();
+    scrollToActive();
+    // 選択中ヒットをテキストエリアでも選択状態にする
+    const [s,e] = matches[activeIndex];
+    editor.focus();
+    editor.setSelectionRange(s, e);
+    scrollToActive();
+  }
+  function scrollToActive(){
+    const el = backdrop.querySelector('.mark.active');
+    if(!el) return;
+    const target = el.offsetTop - editor.clientHeight/2 + el.offsetHeight/2;
+    editor.scrollTop = Math.max(0, target);
+    syncScroll();
+  }
+
+  // ====== 重ね合わせの同期 ======
+  function syncScroll(){
+    backdrop.scrollTop = editor.scrollTop;
+    backdrop.scrollLeft = editor.scrollLeft;
+  }
+  function syncSize(){
+    // テキストエリアの実内容幅/高さに背面を合わせる（折返し位置を一致させる）
+    backdrop.style.width  = editor.clientWidth + 'px';
+    backdrop.style.height = editor.clientHeight + 'px';
+    syncScroll();
+  }
+
+  // ====== ステータス ======
+  function isDirty(){ return current && editor.value !== savedText; }
+  let flashTimer = null;
+  function flashStatus(msg){
+    const el = $('stDirty');
+    el.style.color = 'var(--good)'; el.textContent = '✓ ' + msg;
+    clearTimeout(flashTimer);
+    flashTimer = setTimeout(()=>{ flashTimer = null; el.style.color=''; el.textContent=''; updateStatus(); }, 2200);
+  }
+  function updateStatus(){
+    $('stFile').textContent = current ? current.name : '—';
+    const text = editor.value;
+    // 行・列
+    const pos = editor.selectionStart || 0;
+    const before = text.slice(0, pos);
+    const line = before.split('\n').length;
+    const col = pos - before.lastIndexOf('\n');
+    $('stPos').textContent = '行 ' + line + ', 列 ' + col;
+    $('stCount').textContent = text.length.toLocaleString('ja') + ' 文字 / ' + (text ? text.split('\n').length : 0) + ' 行';
+    $('stEnc').textContent = current ? ('読込:' + readEncodingUsed + '  保存:' + saveEnc.value.toUpperCase().replace('-BOM','(BOM)')) : '';
+    const d = $('stDirty');
+    d.style.color=''; d.textContent = isDirty() ? '● 未保存' : '';
+  }
+  function updateModeLabel(){
+    const m = $('stMode');
+    if(!entries.length){ m.innerHTML=''; return; }
+    m.innerHTML = usingFallback
+      ? 'モード: <b>ダウンロード保存</b>（その場上書き不可）'
+      : 'モード: <b>その場で上書き保存</b>';
+  }
+
+  // ====== イベント ======
+  $('openFolder').addEventListener('click', openFolder);
+  reloadBtn.addEventListener('click', async ()=>{
+    if(usingFallback || !dirHandle) return;
+    if(current && isDirty() && !confirm('未保存の変更があります。再読み込みで破棄されます。続けますか？')) return;
+    await listFromHandle();
+  });
+  saveBtn.addEventListener('click', save);
+  saveEnc.addEventListener('change', updateStatus);
+  fileFilter.addEventListener('input', renderList);
+  showAll.addEventListener('change', renderList);
+
+  // 検索（入力をデバウンス）
+  let searchTimer = null;
+  function scheduleSearch(){
+    activeIndex = 0;
+    clearTimeout(searchTimer);
+    searchTimer = setTimeout(()=>{ renderHighlights(); if(matches.length) scrollToActive(); }, 120);
+  }
+  search.addEventListener('input', scheduleSearch);
+  useRegex.addEventListener('change', ()=>{ activeIndex=0; renderHighlights(); });
+  ignoreCase.addEventListener('change', ()=>{ activeIndex=0; renderHighlights(); });
+  $('next').addEventListener('click', ()=> go(+1));
+  $('prev').addEventListener('click', ()=> go(-1));
+  search.addEventListener('keydown', (e)=>{
+    if(e.key === 'Enter'){ e.preventDefault(); go(e.shiftKey ? -1 : +1); }
+    else if(e.key === 'Escape'){ editor.focus(); }
+  });
+
+  // エディタ
+  editor.addEventListener('input', ()=>{ renderHighlights(); updateStatus(); renderListDirtyOnly(); });
+  editor.addEventListener('scroll', syncScroll);
+  editor.addEventListener('keyup', updateStatus);
+  editor.addEventListener('click', updateStatus);
+  // Tab でタブ挿入（フォーカスを奪われない）
+  editor.addEventListener('keydown', (e)=>{
+    if(e.key === 'Tab'){
+      e.preventDefault();
+      const s = editor.selectionStart, en = editor.selectionEnd;
+      editor.value = editor.value.slice(0,s) + '\t' + editor.value.slice(en);
+      editor.selectionStart = editor.selectionEnd = s + 1;
+      renderHighlights(); updateStatus(); renderListDirtyOnly();
+    }
+  });
+
+  // 一覧の「未保存ドット」だけ軽く更新（全描画を避ける）
+  function renderListDirtyOnly(){
+    const active = fileList.querySelector('li.active');
+    if(active) active.classList.toggle('dirty', isDirty());
+  }
+
+  // ResizeObserver で背面サイズを自動追従（スプリッタ/ウィンドウ変更に対応）
+  if('ResizeObserver' in window){
+    new ResizeObserver(()=> syncSize()).observe(editor);
+  }else{
+    window.addEventListener('resize', syncSize);
+  }
+
+  // ショートカット（Ctrl+S 保存 / Ctrl+F 検索）
+  document.addEventListener('keydown', (e)=>{
+    const ctrl = e.ctrlKey || e.metaKey;
+    if(ctrl && e.key.toLowerCase() === 's'){ e.preventDefault(); if(!saveBtn.disabled) save(); }
+    else if(ctrl && e.key.toLowerCase() === 'f'){ e.preventDefault(); if(!search.disabled){ search.focus(); search.select(); } }
+    else if(e.key === 'F3'){ e.preventDefault(); go(e.shiftKey ? -1 : +1); }
+  });
+
+  // ページ離脱時の未保存警告
+  window.addEventListener('beforeunload', (e)=>{
+    if(isDirty()){ e.preventDefault(); e.returnValue = ''; }
+  });
+
+  // ====== スプリッター ======
+  const panes = $('panes'), splitter = $('splitter');
+  let dragging = false;
+  splitter.addEventListener('pointerdown', (e)=>{ dragging = true; splitter.setPointerCapture(e.pointerId); document.body.style.cursor='col-resize'; });
+  splitter.addEventListener('pointermove', (e)=>{
+    if(!dragging) return;
+    const rect = panes.getBoundingClientRect();
+    let w = e.clientX - rect.left;
+    w = Math.max(160, Math.min(w, rect.width * 0.6));
+    panes.style.setProperty('--leftw', w + 'px');
+  });
+  const endDrag = ()=>{ dragging = false; document.body.style.cursor=''; };
+  splitter.addEventListener('pointerup', endDrag);
+  splitter.addEventListener('pointercancel', endDrag);
+
+  // ====== 初期化 ======
+  updateModeLabel();
+  $('stMode').innerHTML = hasFSA
+    ? 'このブラウザは <b>その場で上書き保存</b> に対応しています'
+    : 'このブラウザは <b>ダウンロード保存</b> のみ対応です';
+})();
+</script>
+</body>
+</html>
